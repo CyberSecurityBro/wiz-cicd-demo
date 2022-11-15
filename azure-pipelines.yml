@@ -1,0 +1,68 @@
+trigger:
+- master
+
+pool:
+  vmImage: 'Ubuntu-16.04'
+
+#populate this variable with the desired image to be scanned, i.e. nginx:latest. Alternatively, add an environment variable
+variables:
+  imageName: 'nginx:latest'
+
+steps:
+- task: UniversalPackages@0
+  displayName: 'Obtain WizCLI from AZDO Artifacts'
+  inputs:
+    command: 'download'
+    downloadDirectory: '$(System.DefaultWorkingDirectory)'
+    feedsToUse: 'internal'
+    vstsFeed: '<Project ID>/<Feed ID>'
+    vstsFeedPackage: '<Package ID>'
+    vstsPackageVersion: '0.0.1'
+
+- task: CmdLine@2
+  inputs:
+    script: |
+      echo "##[command]Moving WizCLI to a user working directory"
+      sudo mv $(System.DefaultWorkingDirectory)/wizcli /usr/bin/wizcli
+      echo "##[command]Making WizCLI executable"
+      sudo chmod +x /usr/bin/wizcli
+      echo "##[command]Pulling image if not available yet"
+      docker pull $(imageName)
+
+- task: UniversalPackages@0
+  displayName: 'Obtain cached Wiz auth'
+  continueOnError: true
+  inputs:
+    command: download
+    vstsFeed: 'Project1/WizAuth'
+    vstsFeedPackage: 'auth.json'
+    vstsPackageVersion: '1.0.0'
+    downloadDirectory: '$(Build.SourcesDirectory)'
+
+- task: CmdLine@2
+  inputs:
+    script: |
+      echo "##[command]Checking if auth cache exists and move it to its rightful place..."
+      mkdir ${HOME}/.wiz
+      sudo mv $(Build.SourcesDirectory)/auth.json ${HOME}/.wiz
+      echo "##[command]Trying scan with cached auth"
+      /usr/bin/./wizcli docker scan --image $(imageName) 
+      exitCode=$?
+      if [ $exitCode -eq 3 ]; then
+        echo "##[warning]Not authenticated via cache! Authenticating and scanning again."
+        # Time to authenticate!
+        /usr/bin/./wizcli auth --id $(WIZ_ID) --secret $(WIZ_SECRET)
+        sudo cp ${HOME}/.wiz/auth.json $(Build.ArtifactStagingDirectory)
+        /usr/bin/./wizcli docker scan --image $(imageName) 
+        exitCode=$?
+      fi
+      echo "##[command]Saving auth cache in next task..."
+- task: UniversalPackages@0
+  displayName: 'Cache Wiz auth'
+  inputs:
+    command: publish
+    publishDirectory: '$(Build.ArtifactStagingDirectory)'
+    vstsFeedPublish: '<Project name>/<Feed name>'
+    vstsFeedPackagePublish: 'auth.json'
+    versionOption: custom
+    versionPublish: '1.0.0'
